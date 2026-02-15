@@ -1,5 +1,5 @@
 import User from "../model/user.model.js";
-import { uploadOnCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
+import { uploadOnCloudinary, deleteFromCloudinary, getPublicIdFromUrl } from "../utils/cloudinary.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -13,8 +13,8 @@ export const updateProfile = asyncHandler(async (req, res) => {
   const { name, mobile_number } = req.body;
   
   const updateData = {};
-  if (name) updateData.name = name;
-  if (mobile_number) updateData.mobile_number = mobile_number;
+  if (name !== undefined) updateData.name = name;
+  if (mobile_number !== undefined) updateData.mobile_number = mobile_number;
 
   const updatedUser = await User.findByIdAndUpdate(
     req.user._id, 
@@ -35,11 +35,16 @@ export const uploadProfileImage = asyncHandler(async (req, res) => {
   if (!req.file) {
     throw new ApiError(400, "No file uploaded");
   }
-
+  const user = await User.findById(req.user._id).select("avatar");
   const result = await uploadOnCloudinary(req.file.path, "avatar");
   
   if (!result) {
     throw new ApiError(500, "Error uploading image to Cloudinary");
+  }
+
+  if (user?.avatar) {
+    const publicId = getPublicIdFromUrl(user.avatar);
+    if (publicId) await deleteFromCloudinary(publicId, "avatar");
   }
 
   const updatedUser = await User.findByIdAndUpdate(
@@ -57,8 +62,8 @@ export const deleteProfileImage = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id);
   
   if (user.avatar) {
-    const publicId = `user_${req.user._id}`;
-    await deleteFromCloudinary(publicId, "avatar");
+    const publicId = getPublicIdFromUrl(user.avatar);
+    if (publicId) await deleteFromCloudinary(publicId, "avatar");
   }
   const updatedUser = await User.findByIdAndUpdate(
     req.user._id,

@@ -9,7 +9,9 @@ const cartProductSchema = mongoose.Schema(
     },
     quantity: {
       type: Number,
-      required: true
+      required: true,
+      min: 1,
+      default: 1
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -19,5 +21,7 @@ const cartProductSchema = mongoose.Schema(
   },
   { timestamps: true }
 )
+cartProductSchema.index({ userId: 1, productId: 1 }, { unique: true })
+cartProductSchema.index({ userId: 1 })
 const cartProductModel = mongoose.model('cartProduct', cartProductSchema)
 export default cartProductModel
