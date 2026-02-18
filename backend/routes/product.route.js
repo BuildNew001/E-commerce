@@ -20,6 +20,8 @@ import { protectedRoute, isAdmin } from '../middleware/auth.middleware.js'
 const router = Router()
 
 // Admin routes
+router.post('/', protectedRoute, isAdmin, upload.array('images', 6), createProduct)
+router.patch('/:id', protectedRoute, isAdmin, upload.array('images', 6), updateProduct)
 router.post('/create', protectedRoute, isAdmin, upload.array('images', 6), createProduct)
 router.put('/updateProduct/:id', protectedRoute, isAdmin, upload.array('images', 6), updateProduct)
 router.delete('/:id', protectedRoute, isAdmin, deleteProduct)
@@ -27,6 +29,7 @@ router.post('/uploadImages', protectedRoute, isAdmin, upload.array('images', 6),
 router.delete('/deleteImage', protectedRoute, isAdmin, deleteProductImage)
 
 // Public routes
+router.get('/', getAllProducts)
 router.get('/getAllProducts', getAllProducts)
 router.get('/getAllProductsByCatId/:id', getAllProductsByCatId)
 router.get('/getAllProductsByCatName', getAllProductsByCatName)

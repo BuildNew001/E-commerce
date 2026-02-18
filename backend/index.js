@@ -10,6 +10,7 @@ import userRoutes from "./routes/user.route.js"
 import categoryRoutes from "./routes/category.route.js"
 import productRoutes from "./routes/product.route.js"
 import cartRoutes from "./routes/cart.route.js"
+import myListRoutes from "./routes/myList.route.js"
 import { ApiError } from "./utils/ApiError.js"
 
 dotenv.config()
@@ -28,6 +29,7 @@ app.use("/api/v1/user", userRoutes)
 app.use("/api/v1/categories", categoryRoutes)
 app.use("/api/v1/products", productRoutes)
 app.use("/api/v1/cart", cartRoutes)
+app.use("/api/v1/mylist", myListRoutes)
 
 // Error handling middleware
 app.use((err, req, res, next) => {

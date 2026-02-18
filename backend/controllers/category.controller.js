@@ -23,6 +23,58 @@ const parsePagination = (page, limit) => {
   return { pageNumber, limitNumber };
 };
 
+const encodeCursor = (doc) => {
+  const payload = {
+    createdAt: doc.createdAt?.toISOString(),
+    id: doc._id?.toString(),
+  };
+  return Buffer.from(JSON.stringify(payload)).toString('base64');
+};
+
+const decodeCursor = (value) => {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+    if (!decoded?.createdAt || !decoded?.id) {
+      throw new ApiError(400, "Invalid cursor");
+    }
+    const createdAt = new Date(decoded.createdAt);
+    if (Number.isNaN(createdAt.getTime())) {
+      throw new ApiError(400, "Invalid cursor");
+    }
+    if (!mongoose.isValidObjectId(decoded.id)) {
+      throw new ApiError(400, "Invalid cursor");
+    }
+    return { createdAt, id: new mongoose.Types.ObjectId(decoded.id) };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(400, "Invalid cursor");
+  }
+};
+
+const buildCursorFilter = (cursor, sortKey) => {
+  if (!cursor) return null;
+  const isOldest = sortKey === "oldest";
+  return isOldest
+    ? {
+        $or: [
+          { createdAt: { $gt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, _id: { $gt: cursor.id } },
+        ],
+      }
+    : {
+        $or: [
+          { createdAt: { $lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, _id: { $lt: cursor.id } },
+        ],
+      };
+};
+
+const combineQuery = (baseQuery, extraQuery) => {
+  if (!extraQuery) return baseQuery;
+  if (!baseQuery || Object.keys(baseQuery).length === 0) return extraQuery;
+  return { $and: [baseQuery, extraQuery] };
+};
+
 const normalizeName = (name) => (typeof name === "string" ? name.trim() : "");
 
 const getDescendantCategoryIds = async (ancestorId, maxDepth) => {
@@ -123,6 +175,8 @@ export const createCategory = asyncHandler(async (req, res) => {
 export const getAllCategories = asyncHandler(async (req, res) => {
   const { parentCategoryId, search } = req.query;
   const { pageNumber, limitNumber } = parsePagination(req.query.page, req.query.limit);
+  const sortKey = req.query.sort;
+  const cursorValue = req.query.cursor;
   const query = {};
 
   if (parentCategoryId) {
@@ -134,6 +188,43 @@ export const getAllCategories = asyncHandler(async (req, res) => {
 
   if (search) {
     query.name = { $regex: search.trim(), $options: "i" };
+  }
+
+  if (cursorValue) {
+    if (sortKey && sortKey !== "oldest") {
+      throw new ApiError(400, "Cursor pagination supports only newest or oldest sorting");
+    }
+    const cursor = decodeCursor(cursorValue);
+    const cursorFilter = buildCursorFilter(cursor, sortKey);
+    const finalQuery = combineQuery(query, cursorFilter);
+    const cursorSort = sortKey === "oldest" ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 };
+
+    const categories = await Category.find(finalQuery)
+      .populate("parentCategoryId", "name images")
+      .sort(cursorSort)
+      .limit(limitNumber + 1)
+      .lean();
+
+    const hasNextPage = categories.length > limitNumber;
+    if (hasNextPage) categories.pop();
+
+    const nextCursor = hasNextPage ? encodeCursor(categories[categories.length - 1]) : null;
+
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          categories,
+          pagination: {
+            mode: "cursor",
+            limit: limitNumber,
+            nextCursor,
+            hasNextPage,
+          },
+        },
+        "Categories fetched successfully"
+      )
+    );
   }
 
   const skip = (pageNumber - 1) * limitNumber;
@@ -154,6 +245,7 @@ export const getAllCategories = asyncHandler(async (req, res) => {
       {
         categories,
         pagination: {
+          mode: "offset",
           total,
           page: pageNumber,
           limit: limitNumber,

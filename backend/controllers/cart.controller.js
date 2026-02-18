@@ -12,6 +12,64 @@ const normalizeQuantity = (value) => {
   return Math.floor(quantity)
 }
 
+const parsePagination = (page, limit) => {
+  const pageNumber = Math.max(parseInt(page, 10) || 1, 1)
+  const limitNumber = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100)
+  return { pageNumber, limitNumber }
+}
+
+const encodeCursor = (doc) => {
+  const payload = {
+    createdAt: doc.createdAt?.toISOString(),
+    id: doc._id?.toString()
+  }
+  return Buffer.from(JSON.stringify(payload)).toString('base64')
+}
+
+const decodeCursor = (value) => {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, 'base64').toString('utf8'))
+    if (!decoded?.createdAt || !decoded?.id) {
+      throw new ApiError(400, 'Invalid cursor')
+    }
+    const createdAt = new Date(decoded.createdAt)
+    if (Number.isNaN(createdAt.getTime())) {
+      throw new ApiError(400, 'Invalid cursor')
+    }
+    if (!mongoose.isValidObjectId(decoded.id)) {
+      throw new ApiError(400, 'Invalid cursor')
+    }
+    return { createdAt, id: new mongoose.Types.ObjectId(decoded.id) }
+  } catch (error) {
+    if (error instanceof ApiError) throw error
+    throw new ApiError(400, 'Invalid cursor')
+  }
+}
+
+const buildCursorFilter = (cursor, sortKey) => {
+  if (!cursor) return null
+  const isOldest = sortKey === 'oldest'
+  return isOldest
+    ? {
+        $or: [
+          { createdAt: { $gt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, _id: { $gt: cursor.id } }
+        ]
+      }
+    : {
+        $or: [
+          { createdAt: { $lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, _id: { $lt: cursor.id } }
+        ]
+      }
+}
+
+const combineQuery = (baseQuery, extraQuery) => {
+  if (!extraQuery) return baseQuery
+  if (!baseQuery || Object.keys(baseQuery).length === 0) return extraQuery
+  return { $and: [baseQuery, extraQuery] }
+}
+
 export const addToCartItemController = asyncHandler(async (req, res) => {
   const { productId, quantity } = req.body
   const normalizedQuantity = normalizeQuantity(quantity) ?? 1
@@ -88,14 +146,76 @@ export const addToCartItemController = asyncHandler(async (req, res) => {
 })
 
 export const getCartItemController = asyncHandler(async (req, res) => {
-  const cartItems = await CartProduct.find({ userId: req.user._id })
-    .populate('productId', 'name price images countInstock')
-    .sort({ createdAt: -1 })
-    .lean()
+  const { pageNumber, limitNumber } = parsePagination(req.query.page, req.query.limit)
+  const sortKey = req.query.sort
+  const cursorValue = req.query.cursor
+  const baseQuery = { userId: req.user._id }
 
-  return res
-    .status(200)
-    .json(new ApiResponse(200, cartItems, 'Cart items fetched successfully'))
+  if (cursorValue) {
+    if (sortKey && sortKey !== 'oldest') {
+      throw new ApiError(400, 'Cursor pagination supports only newest or oldest sorting')
+    }
+    const cursor = decodeCursor(cursorValue)
+    const cursorFilter = buildCursorFilter(cursor, sortKey)
+    const finalQuery = combineQuery(baseQuery, cursorFilter)
+    const cursorSort = sortKey === 'oldest' ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 }
+
+    const cartItems = await CartProduct.find(finalQuery)
+      .populate('productId', 'name price images countInstock')
+      .sort(cursorSort)
+      .limit(limitNumber + 1)
+      .lean()
+
+    const hasNextPage = cartItems.length > limitNumber
+    if (hasNextPage) cartItems.pop()
+
+    const nextCursor = hasNextPage ? encodeCursor(cartItems[cartItems.length - 1]) : null
+
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          cartItems,
+          pagination: {
+            mode: 'cursor',
+            limit: limitNumber,
+            nextCursor,
+            hasNextPage
+          }
+        },
+        'Cart items fetched successfully'
+      )
+    )
+  }
+
+  const skip = (pageNumber - 1) * limitNumber
+
+  const [cartItems, total] = await Promise.all([
+    CartProduct.find(baseQuery)
+      .populate('productId', 'name price images countInstock')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNumber)
+      .lean(),
+    CartProduct.countDocuments(baseQuery)
+  ])
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        cartItems,
+        pagination: {
+          mode: 'offset',
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(total / limitNumber)
+        }
+      },
+      'Cart items fetched successfully'
+    )
+  )
 })
 
 export const updateCartItemQuantityController = asyncHandler(async (req, res) => {
